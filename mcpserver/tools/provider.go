@@ -35,6 +35,10 @@ type MCPToolContext struct {
 // MCPToolResolver defines the signature for MCP tool resolvers
 type MCPToolResolver func(*MCPToolContext, llm.ToolArgumentGetter) (string, error)
 
+// MCPRichToolResolver is a resolver that returns full MCP content blocks, for
+// tools whose output is not plain text (e.g. images).
+type MCPRichToolResolver func(*MCPToolContext, llm.ToolArgumentGetter) ([]mcp.Content, error)
+
 // typed adapts a resolver that accepts an already-decoded argument struct into
 // an MCPToolResolver. It owns argument decoding and the standard "invalid
 // arguments" error, so individual resolvers start at their real logic.
@@ -68,6 +72,18 @@ func mcpReadTool[T any](p *MattermostToolProvider, name, description string, han
 	return tool
 }
 
+// typedRich is the MCPRichToolResolver counterpart of typed, for resolvers that
+// return full MCP content blocks instead of plain text.
+func typedRich[T any](name string, fn func(*MCPToolContext, T) ([]mcp.Content, error)) MCPRichToolResolver {
+	return func(mcpContext *MCPToolContext, argsGetter llm.ToolArgumentGetter) ([]mcp.Content, error) {
+		var args T
+		if err := argsGetter(&args); err != nil {
+			return nil, fmt.Errorf("failed to get arguments for tool %s: %w", name, err)
+		}
+		return fn(mcpContext, args)
+	}
+}
+
 // MCPTool represents a tool specifically for MCP use with our custom context
 type MCPTool struct {
 	Name        string
@@ -78,6 +94,10 @@ type MCPTool struct {
 	// ReadOnly is true when the tool only retrieves data. State-changing tools
 	// are available at Enterprise and above.
 	ReadOnly bool
+
+	// RichResolver, when set, takes priority over Resolver and lets the tool
+	// return non-text content blocks such as images.
+	RichResolver MCPRichToolResolver
 }
 
 type ToolProvider interface {
@@ -322,6 +342,26 @@ func (p *MattermostToolProvider) registerDynamicTool(server *mcp.Server, mcpTool
 			}
 
 			return json.Unmarshal(argumentsBytes, target)
+		}
+
+		// Rich resolvers return content blocks directly (e.g. images).
+		if mcpTool.RichResolver != nil {
+			contents, resolveErr := mcpTool.RichResolver(mcpContext, argsGetter)
+			if resolveErr != nil {
+				p.logger.Debug("MCP tool failed", "tool", mcpTool.Name, "error", resolveErr.Error())
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{
+						&mcp.TextContent{Text: "Error: " + resolveErr.Error()},
+					},
+					IsError: true,
+				}, nil
+			}
+
+			p.logger.Debug("MCP tool completed successfully", "tool", mcpTool.Name)
+			return &mcp.CallToolResult{
+				Content: contents,
+				IsError: false,
+			}, nil
 		}
 
 		// Call the tool resolver
