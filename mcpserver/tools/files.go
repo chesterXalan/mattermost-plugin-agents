@@ -48,6 +48,7 @@ func (p *MattermostToolProvider) getFileTools() []MCPTool {
 		mcpReadTool(p, "get_file_link", getFileLinkDescription, p.toolGetFileLink),
 		mcpReadTool(p, "search_files", searchFilesDescription, p.toolSearchFiles),
 		mcpTool(p, "upload_file", uploadFileDescription, p.toolUploadFile),
+		mcpTool(p, "download_file", downloadFileDescription, p.toolDownloadFile),
 	}
 }
 
@@ -132,9 +133,13 @@ func (p *MattermostToolProvider) toolReadFile(mcpContext *MCPToolContext, args R
 	// user's client (the extraction service is text-only).
 	if isInlineImageMimeType(info.MimeType) {
 		if info.Size > maxInlineImageBytes {
+			hint := "Use get_file_link to get a URL instead."
+			if mcpContext.AccessMode == AccessModeLocal {
+				hint = "Use download_file to save it locally, or get_file_link to get a URL."
+			}
 			return []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
-				"Image %q (%s) is %d bytes, larger than the %d-byte inline limit. Use get_file_link to get a URL instead.",
-				info.Name, info.MimeType, info.Size, maxInlineImageBytes)}}, nil
+				"Image %q (%s) is %d bytes, larger than the %d-byte inline limit. %s",
+				info.Name, info.MimeType, info.Size, maxInlineImageBytes, hint)}}, nil
 		}
 		data, _, downloadErr := client.GetFile(ctx, args.FileID)
 		if downloadErr != nil {
@@ -155,7 +160,7 @@ func (p *MattermostToolProvider) toolReadFile(mcpContext *MCPToolContext, args R
 	if p.fileContentService != nil {
 		content, svcErr := p.fileContentService.GetContent(ctx, mcpContext.UserID, args.FileID, args.Offset, args.Limit)
 		if svcErr == nil {
-			return []mcp.Content{&mcp.TextContent{Text: formatFileContent(content)}}, nil
+			return []mcp.Content{&mcp.TextContent{Text: formatFileContent(content, mcpContext.AccessMode)}}, nil
 		}
 		if errors.Is(svcErr, files.ErrForbidden) {
 			return nil, fmt.Errorf("you do not have permission to read this file")
@@ -170,14 +175,19 @@ func (p *MattermostToolProvider) toolReadFile(mcpContext *MCPToolContext, args R
 	if err != nil {
 		return nil, fmt.Errorf("error reading file %s: %w", args.FileID, err)
 	}
-	return []mcp.Content{&mcp.TextContent{Text: formatFileContent(content)}}, nil
+	return []mcp.Content{&mcp.TextContent{Text: formatFileContent(content, mcpContext.AccessMode)}}, nil
 }
 
 // formatFileContent renders a ranged file read for the LLM, including paging
-// instructions when more content remains.
-func formatFileContent(c files.Content) string {
+// instructions when more content remains. In local access mode a file without
+// readable text points to download_file, the only way to get at its contents.
+func formatFileContent(c files.Content, accessMode AccessMode) string {
 	if !c.HasText {
-		return fmt.Sprintf("File %q (%s) has no extractable text content and cannot be read as text.", c.Name, c.MimeType)
+		msg := fmt.Sprintf("File %q (%s) has no extractable text content and cannot be read as text.", c.Name, c.MimeType)
+		if accessMode == AccessModeLocal {
+			msg += " Use download_file to save the original file locally."
+		}
+		return msg
 	}
 
 	var b strings.Builder
@@ -227,12 +237,18 @@ type UploadFileArgs struct {
 	Path      string `json:"path" access:"local" jsonschema:"Local file path or URL to upload"`
 }
 
+// DownloadFileArgs represents arguments for the download_file tool.
+type DownloadFileArgs struct {
+	FileID string `json:"file_id" jsonschema:"The ID of the file to download; use the File ID shown in the attached-file metadata,minLength=26,maxLength=26"`
+}
+
 const (
 	getFileInfoDescription  = "Get metadata for a single file/attachment. Parameters: file_id (required). Returns name, type, size, and File ID."
 	getPostFilesDescription = "Get the file attachments on a post (metadata per file). Parameters: post_id (required)."
 	getFileLinkDescription  = "Get a public permalink URL for a file. Parameters: file_id (required). Requires public links to be enabled on the server."
 	searchFilesDescription  = "Search file attachments by filename/content within a team. Parameters: terms (required), team_id (required)."
 	uploadFileDescription   = "Upload a file from a local path or URL to a channel and return its File ID. Local access only. Parameters: channel_id (required), path (required)."
+	downloadFileDescription = "Download a file attachment to the local filesystem by its File ID and return the saved path. Use this when you need the original file (e.g. to open a spreadsheet, archive, or PDF with local tools); use read_file to read text or view an image inline. Files are saved under the MCP server's download directory. Local access only. Parameters: file_id (required)."
 )
 
 // toolGetFileInfo implements the get_file_info tool.
@@ -331,4 +347,38 @@ func (p *MattermostToolProvider) toolUploadFile(mcpContext *MCPToolContext, args
 		return "", fmt.Errorf("upload produced no file")
 	}
 	return fmt.Sprintf("Successfully uploaded file to channel %s. File ID: %s", args.ChannelID, fileIDs[0]), nil
+}
+
+// toolDownloadFile implements the download_file tool. Saving to the local
+// filesystem is only supported in local access mode.
+func (p *MattermostToolProvider) toolDownloadFile(mcpContext *MCPToolContext, args DownloadFileArgs) (string, error) {
+	if err := requireID("file_id", args.FileID); err != nil {
+		return "", err
+	}
+	if mcpContext.AccessMode != AccessModeLocal {
+		return "file downloads to the local filesystem are only supported in local access mode", nil
+	}
+
+	info, _, err := mcpContext.Client.GetFileInfo(mcpContext.Ctx, args.FileID)
+	if err != nil {
+		return "", fmt.Errorf("error fetching file info: %w", err)
+	}
+	if info.Size > maxMCPFetchBytes {
+		return "", fmt.Errorf("file %q is %d bytes, larger than the %d-byte download limit", info.Name, info.Size, maxMCPFetchBytes)
+	}
+
+	data, _, err := mcpContext.Client.GetFile(mcpContext.Ctx, args.FileID)
+	if err != nil {
+		return "", fmt.Errorf("error downloading file: %w", err)
+	}
+
+	savedPath, err := saveDownloadedFile(args.FileID, info.Name, data)
+	if err != nil {
+		return "", fmt.Errorf("error saving file: %w", err)
+	}
+
+	var result strings.Builder
+	fmt.Fprintf(&result, "Saved to: %s\n", savedPath)
+	format.WriteFileDescriptor(&result, format.FileDescriptorEntry{FileInfo: info})
+	return result.String(), nil
 }

@@ -855,7 +855,7 @@ The plugin also registers an extended catalog of read and write tools spanning M
 - **Users & profiles**: get_me, get_user, get_user_by_username, get_user_by_email, get_users_by_ids, get_users_by_usernames, get_user_stats, get_user_cpa_values, list_cpa_fields, ⚠ update_user
 - **Status & presence**: get_user_status, get_users_statuses, get_user_custom_status, ⚠ set_status, ⚠ set_dnd
 - **Teams & team members**: get_team_member, get_team_stats, get_user_teams, get_users_in_team, get_users_not_in_team, get_new_users_in_team, get_dm_common_teams, search_teams, search_users_in_team, ⚠ add_team_members, ⚠ remove_team_member, ⚠ update_team, ⚠ invite_users_to_team, ⚠ invite_users_to_team_and_channels
-- **Files & attachments**: get_file_info, get_post_files, get_file_link, search_files, ⚠ upload_file
+- **Files & attachments**: get_file_info, get_post_files, get_file_link, search_files, download_file, ⚠ upload_file
 - **Integrations**: get_bot, list_bots, list_incoming_webhooks, list_outgoing_webhooks
 - **Groups**: get_group_info, list_groups, get_user_groups, get_channel_groups, get_team_groups, get_users_in_group_channels
 - **Roles & permissions**: get_role, get_channel_moderations, ⚠ update_channel_member_roles, ⚠ update_team_member_roles

@@ -143,6 +143,62 @@ func readLocalFileFromAllowedRoots(absPath string) ([]byte, error) {
 	return nil, fmt.Errorf("absolute path %q is not inside any allowed attachment root; set the %s environment variable on the MCP server, or use a path relative to the data directory", absPath, AttachmentRootsEnvVar)
 }
 
+// DownloadDirEnvVar names the environment variable that overrides where
+// local-mode downloads are saved. It must be an absolute directory; when unset,
+// downloads go to a "downloads" directory inside the data directory.
+const DownloadDirEnvVar = "MM_MCP_DOWNLOAD_DIR"
+
+// getDownloadDirectory returns the directory local-mode downloads are saved in.
+func getDownloadDirectory() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv(DownloadDirEnvVar)); dir != "" {
+		if !filepath.IsAbs(dir) {
+			return "", fmt.Errorf("%s must be an absolute path, got %q", DownloadDirEnvVar, dir)
+		}
+		return filepath.Clean(dir), nil
+	}
+
+	dataDir, err := GetDataDirectoryInternal()
+	if err != nil {
+		return "", fmt.Errorf("failed to get data directory (set the %s environment variable on the MCP server to choose a download directory): %w", DownloadDirEnvVar, err)
+	}
+	return filepath.Join(dataDir, "downloads"), nil
+}
+
+// saveDownloadedFile writes a downloaded attachment to
+// <download dir>/<file ID>/<file name> and returns the absolute path. Callers
+// cannot choose the destination, and the write goes through os.Root so a hostile
+// file name cannot escape the download directory.
+func saveDownloadedFile(fileID, fileName string, data []byte) (string, error) {
+	downloadDir, err := getDownloadDirectory()
+	if err != nil {
+		return "", err
+	}
+	if mkdirErr := os.MkdirAll(downloadDir, 0700); mkdirErr != nil {
+		return "", fmt.Errorf("failed to create download directory: %w", mkdirErr)
+	}
+
+	root, err := os.OpenRoot(downloadDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to open download directory root: %w", err)
+	}
+	defer root.Close()
+
+	name := filepath.Base(strings.TrimSpace(fileName))
+	if name == "" || name == "." || name == ".." || name == string(filepath.Separator) {
+		name = "attachment"
+	}
+
+	if mkdirErr := root.MkdirAll(fileID, 0700); mkdirErr != nil {
+		return "", fmt.Errorf("failed to create directory for file: %w", mkdirErr)
+	}
+	relPath := filepath.Join(fileID, name)
+	if writeErr := root.WriteFile(relPath, data, 0600); writeErr != nil {
+		return "", fmt.Errorf("failed to write file: %w", writeErr)
+	}
+
+	return filepath.Join(downloadDir, relPath), nil
+}
+
 // fetchFileDataForLocal fetches file data from a file path or URL (local access only)
 func fetchFileDataForLocal(ctx context.Context, filespec string, accessMode AccessMode) ([]byte, error) {
 	if filespec == "" {

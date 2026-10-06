@@ -142,6 +142,7 @@ var expectedToolReadOnly = map[string]bool{
 	"get_file_link":  true,
 	"search_files":   true,
 	"upload_file":    false,
+	"download_file":  false,
 
 	// integrations
 	"get_bot":                true,

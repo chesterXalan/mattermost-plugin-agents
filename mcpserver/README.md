@@ -296,12 +296,17 @@ mattermost-plugin-agents/
 - **`create_post_as_user`**: Attach files when posting as specific users  
 - **`create_user`**: Set profile images using the `profile_image` parameter (dev mode)
 - **`create_team`**: Set team icons using the `team_icon` parameter (dev mode)
+- **`download_file`**: Save an attachment's original file locally by its File ID and return the saved path
 
 ### File Management
 
 1. **Place files in the data directory**: Copy your files to `mcpserver/data/` or subdirectories within it
 2. **Reference with relative paths**: Use paths relative to the data directory (e.g., `report.pdf` for `mcpserver/data/report.pdf`)
 3. **Organize as needed**: Create subdirectories for better organization (e.g., `documents/`, `images/`)
+
+### Downloads
+
+`download_file` saves each file to `mcpserver/data/downloads/<file ID>/<file name>`. Set the `MM_MCP_DOWNLOAD_DIR` environment variable to an absolute directory to save downloads elsewhere. The destination cannot be chosen per call.
 
 ### Advanced Configuration: Internal Server URL
 
