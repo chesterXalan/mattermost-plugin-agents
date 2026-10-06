@@ -89,6 +89,7 @@ func TestToolReadFile(t *testing.T) {
 		wantText        []string // substring matches against concatenated text content
 		wantImage       bool
 		wantImageMIME   string // expected MIME on the image block; defaults to info.MimeType
+		accessMode      AccessMode
 	}{
 		{
 			name:            "invalid file id",
@@ -188,13 +189,30 @@ func TestToolReadFile(t *testing.T) {
 			service:  nil,
 			wantText: []string{`File "archive.zip" (application/zip) has no extractable text content`},
 		},
+		{
+			name:       "local mode points an unreadable file to download_file",
+			fileID:     fileID,
+			info:       &model.FileInfo{Id: fileID, Name: "sheet.xlsx", MimeType: "application/zip"},
+			service:    &fakeFileContentService{content: files.Content{Name: "sheet.xlsx", MimeType: "application/zip"}},
+			wantText:   []string{"has no extractable text content", "download_file"},
+			accessMode: AccessModeLocal,
+		},
+		{
+			name:       "local mode points an oversized image to download_file",
+			fileID:     fileID,
+			info:       &model.FileInfo{Id: fileID, Name: "huge.png", MimeType: "image/png", Size: maxInlineImageBytes + 1},
+			service:    &fakeFileContentService{},
+			wantText:   []string{"larger than", "download_file"},
+			wantImage:  false,
+			accessMode: AccessModeLocal,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newTestFileServer(t, tt.info, tt.fileData)
 			p := &MattermostToolProvider{fileContentService: tt.service, logger: &testLogger{t: t}}
-			ctx := &MCPToolContext{Ctx: context.Background(), UserID: model.NewId(), Client: newTestClient(server.URL)}
+			ctx := &MCPToolContext{Ctx: context.Background(), UserID: model.NewId(), Client: newTestClient(server.URL), AccessMode: tt.accessMode}
 
 			contents, err := p.toolReadFile(ctx, ReadFileArgs{FileID: tt.fileID})
 
